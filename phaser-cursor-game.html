@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Phaser - Juego con cursor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Phaser 3 desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.0/dist/phaser.min.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0f172a; }
+    #game { margin: 0 auto; display: block; max-width: 960px; }
+    .hint { position: fixed; left: 50%; transform: translateX(-50%);
+            bottom: 10px; color: #cbd5e1; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hint">Mueve el mouse para desplazarte • Clic para “dash” • ¡Toma orbes y evita enemigos!</div>
+  <script>
+    class CursorGame extends Phaser.Scene {
+      constructor() {
+        super('CursorGame');
+        this.target = new Phaser.Math.Vector2(); // objetivo al que sigue el jugador (cursor)
+        this.baseSpeed = 220;  // velocidad normal
+        this.dashSpeed = 520;  // velocidad en dash
+        this.dashTime = 160;   // duración del dash (ms)
+        this.dashCooldown = 600; // cd (ms)
+        this.canDash = true;
+        this.score = 0;
+        this.gameOver = false;
+      }
+
+      preload() { /* sin assets externos */ }
+
+      create() {
+        // Crear texturas por código (circulo para jugador, orbe, enemigo)
+        this._makeCircleTexture('tx_player', 14, 0x22c55e, 0x052e16);
+        this._makeCircleTexture('tx_orb', 8, 0xfacc15, 0x2e1900);
+        this._makeCircleTexture('tx_enemy', 12, 0xef4444, 0x2f0a0a);
+
+        // Fondo sutil con cuadrícula
+        this._drawGridBackground();
+
+        // Grupos
+        this.player = this.physics.add.image(480, 270, 'tx_player');
+        this.player.setCircle(14).setCollideWorldBounds(true);
+        this.player.body.setMaxSpeed(this.dashSpeed);
+
+        this.enemies = this.physics.add.group();
+        this.orbs = this.physics.add.group();
+
+        // UI
+        this.scoreText = this.add.text(12, 10, 'Puntos: 0', {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '18px',
+          color: '#e2e8f0'
+        }).setDepth(10).setScrollFactor(0);
+
+        this.infoText = this.add.text(12, 34, 'Toma 15 orbes para ganar', {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '14px',
+          color: '#94a3b8'
+        }).setDepth(10).setScrollFactor(0);
+
+        // Poblar mundo
+        this._spawnOrbs(10);
+        this._spawnEnemies(5);
+
+        // Seguir cursor
+        this.input.on('pointermove', (pointer) => {
+          this.target.set(pointer.worldX, pointer.worldY);
+        });
+
+        // Dash con clic
+        this.input.on('pointerdown', () => {
+          if (!this.gameOver && this.canDash) {
+            this._doDash();
+          } else if (this.gameOver) {
+            this.scene.restart();
+          }
+        });
+
+        // Colisiones
+        this.physics.add.overlap(this.player, this.orbs, (player, orb) => {
+          orb.destroy();
+          this.score += 1;
+          this.scoreText.setText('Puntos: ' + this.score);
+          // Reponer orbes de vez en cuando
+          if (this.orbs.countActive(true) < 8) this._spawnOrbs(3);
+
+          // Condición de victoria
+          if (this.score >= 15 && !this.gameOver) {
+            this._win();
+          }
+        });
+
+        this.physics.add.collider(this.player, this.enemies, () => {
+          if (!this.gameOver) this._lose();
+        });
+
+        // Establecer objetivo inicial como posición actual
+        this.target.set(this.player.x, this.player.y);
+
+        // Borde decorativo pulsante (no interfiere en física)
+        this.ring = this.add.circle(this.player.x, this.player.y, 22, 0xffffff, 0.06);
+      }
+
+      update(time, delta) {
+        if (this.gameOver) return;
+
+        // Seguir al objetivo (cursor) con aceleración suave
+        const toTarget = new Phaser.Math.Vector2(this.target.x - this.player.x, this.target.y - this.player.y);
+        const dist = toTarget.length();
+        const dir = toTarget.normalize();
+
+        const speed = this.player.getData('isDashing') ? this.dashSpeed : this.baseSpeed;
+        this.player.setVelocity(dir.x * speed, dir.y * speed);
+
+        // Si estamos muy cerca, frenar para evitar jitter
+        if (dist < 6) {
+          this.player.setVelocity(0, 0);
+        }
+
+        // Mover anillo de decoración al jugador
+        this.ring.setPosition(this.player.x, this.player.y);
+        // Efecto “latido”
+        this.ring.setScale(1 + 0.06 * Math.sin(time * 0.008));
+
+        // Asegurar que enemigos reboten
+        this.enemies.children.iterate((e) => {
+          if (!e) return;
+          // Pequeño “nudge” si se queda muy lento
+          if (Math.abs(e.body.velocity.x) < 40 && Math.abs(e.body.velocity.y) < 40) {
+            e.body.velocity.x += Phaser.Math.Between(-80, 80);
+            e.body.velocity.y += Phaser.Math.Between(-80, 80);
+          }
+        });
+      }
+
+      // ========== utilidades ==========
+      _makeCircleTexture(key, radius, fillColor, strokeColor) {
+        const g = this.add.graphics();
+        g.fillStyle(fillColor, 1);
+        g.fillCircle(radius + 2, radius + 2, radius);
+        g.lineStyle(3, strokeColor, 1);
+        g.strokeCircle(radius + 2, radius + 2, radius);
+        g.generateTexture(key, (radius + 2) * 2, (radius + 2) * 2);
+        g.destroy();
+      }
+
+      _drawGridBackground() {
+        const w = 960, h = 540;
+        const g = this.add.graphics();
+        g.fillStyle(0x0b1220, 1).fillRect(0, 0, w, h);
+        g.lineStyle(1, 0x1e293b, 0.6);
+        for (let x = 0; x <= w; x += 32) g.lineBetween(x, 0, x, h);
+        for (let y = 0; y <= h; y += 32) g.lineBetween(0, y, w, y);
+        g.generateTexture('tx_grid', w, h);
+        g.destroy();
+        this.add.image(0, 0, 'tx_grid').setOrigin(0);
+      }
+
+      _spawnOrbs(n) {
+        for (let i = 0; i < n; i++) {
+          const x = Phaser.Math.Between(40, 920);
+          const y = Phaser.Math.Between(40, 500);
+          const orb = this.orbs.create(x, y, 'tx_orb');
+          orb.setCircle(8);
+        }
+      }
+
+      _spawnEnemies(n) {
+        for (let i = 0; i < n; i++) {
+          const x = Phaser.Math.Between(60, 900);
+          const y = Phaser.Math.Between(60, 480);
+          const enemy = this.enemies.create(x, y, 'tx_enemy');
+          enemy.setCircle(12).setCollideWorldBounds(true).setBounce(1);
+          const vx = Phaser.Math.Between(-160, 160) || 120;
+          const vy = Phaser.Math.Between(-160, 160) || -120;
+          enemy.setVelocity(vx, vy);
+        }
+      }
+
+      _doDash() {
+        this.canDash = false;
+        this.player.setData('isDashing', true);
+
+        // Dar un pequeño impulso extra hacia el cursor
+        const dir = new Phaser.Math.Vector2(this.target.x - this.player.x, this.target.y - this.player.y).normalize();
+        this.player.setVelocity(dir.x * this.dashSpeed, dir.y * this.dashSpeed);
+
+        this.cameras.main.flash(100, 255, 255, 255, false);
+
+        this.time.delayedCall(this.dashTime, () => {
+          this.player.setData('isDashing', false);
+          // cooldown
+          this.time.delayedCall(this.dashCooldown, () => { this.canDash = true; });
+        });
+      }
+
+      _lose() {
+        this.gameOver = true;
+        this.physics.pause();
+        this._banner('¡Perdiste!', 'Clic para reiniciar', 0xef4444);
+      }
+
+      _win() {
+        this.gameOver = true;
+        this.physics.pause();
+        this._banner('¡Ganaste! 🎉', 'Clic para jugar de nuevo', 0x22c55e);
+      }
+
+      _banner(title, subtitle, color) {
+        const w = this.scale.width, h = this.scale.height;
+        const panel = this.add.rectangle(w/2, h/2, 360, 160, 0x000000, 0.6).setStrokeStyle(3, color, 1);
+        const t1 = this.add.text(w/2, h/2 - 22, title, {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '36px', color: '#e2e8f0'
+        }).setOrigin(0.5);
+        const t2 = this.add.text(w/2, h/2 + 28, subtitle, {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '16px', color: '#94a3b8'
+        }).setOrigin(0.5);
+        // guardar refs por si se reinicia
+        this.add.existing(panel); this.add.existing(t1); this.add.existing(t2);
+      }
+    }
+
+    const config = {
+      type: Phaser.AUTO,
+      width: 960,
+      height: 540,
+      parent: 'game',
+      backgroundColor: '#0f172a',
+      physics: {
+        default: 'arcade',
+        arcade: {
+          gravity: { y: 0 },
+          debug: false
+        }
+      },
+      scene: [CursorGame]
+    };
+
+    new Phaser.Game(config);
+  </script>
+</body>
+</html>
+
+
+
+
